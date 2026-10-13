@@ -1,0 +1,1 @@
+"""AI Event Planning Platform application package."""

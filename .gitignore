@@ -1,0 +1,25 @@
+# Python environments
+.venv/
+venv/
+env/
+
+# Secrets and local environment settings
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+secrets.toml
+
+# Caches and generated Python files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Operating system files
+.DS_Store
+Thumbs.db
