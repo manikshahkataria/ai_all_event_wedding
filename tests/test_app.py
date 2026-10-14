@@ -107,7 +107,14 @@ def test_invalid_navigation_state_returns_to_event_selection() -> None:
 
 @pytest.mark.parametrize(
     "protected_page",
-    ["events", "wedding_start", "step_by_step", "describe_wedding"],
+    [
+        "events",
+        "wedding_start",
+        "step_by_step",
+        "describe_wedding",
+        "wedding_followups",
+        "wedding_ceremonies",
+    ],
 )
 def test_protected_pages_redirect_unauthenticated_user(
     protected_page: str,

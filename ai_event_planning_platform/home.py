@@ -15,12 +15,21 @@ from ai_event_planning_platform.auth import (
     restore_authenticated_session,
     store_auth_session,
 )
+from ai_event_planning_platform.wedding_form import render_wedding_requirements
+from ai_event_planning_platform.wedding_description import render_wedding_description
+from ai_event_planning_platform.wedding_followups import render_wedding_followups
+from ai_event_planning_platform.wedding_ceremonies import (
+    WEDDING_CEREMONIES_PAGE,
+    render_wedding_ceremonies,
+)
 
 
 EVENTS_PAGE = "events"
 WEDDING_START_PAGE = "wedding_start"
 STEP_BY_STEP_PAGE = "step_by_step"
 DESCRIBE_WEDDING_PAGE = "describe_wedding"
+WEDDING_FOLLOWUPS_PAGE = "wedding_followups"
+WEDDING_FOLLOWUPS_PAGE = "wedding_followups"
 SIGNUP_PAGE = "signup"
 LOGIN_PAGE = "login"
 VALID_PAGES = {
@@ -28,6 +37,8 @@ VALID_PAGES = {
     WEDDING_START_PAGE,
     STEP_BY_STEP_PAGE,
     DESCRIBE_WEDDING_PAGE,
+    WEDDING_FOLLOWUPS_PAGE,
+    WEDDING_CEREMONIES_PAGE,
     SIGNUP_PAGE,
     LOGIN_PAGE,
 }
@@ -36,6 +47,8 @@ PROTECTED_PAGES = {
     WEDDING_START_PAGE,
     STEP_BY_STEP_PAGE,
     DESCRIBE_WEDDING_PAGE,
+    WEDDING_FOLLOWUPS_PAGE,
+    WEDDING_CEREMONIES_PAGE,
 }
 
 
@@ -225,33 +238,11 @@ def _render_wedding_start() -> None:
 
 
 def _render_step_by_step_placeholder() -> None:
-    st.title("Plan Step by Step")
-    st.write(
-        "The guided wedding-planning flow will help you build your plan one step at a time. "
-        "Wedding forms are planned for a future milestone."
-    )
-    st.button(
-        "Back to planning options",
-        key="back_from_step_by_step",
-        icon=":material/arrow_back:",
-        on_click=_navigate_to,
-        args=(WEDDING_START_PAGE,),
-    )
+    render_wedding_requirements()
 
 
 def _render_describe_wedding_placeholder() -> None:
-    st.title("Describe Your Dream Wedding")
-    st.write(
-        "A future version will let you describe your wedding in your own words. "
-        "AI-assisted organization is planned for a later milestone."
-    )
-    st.button(
-        "Back to planning options",
-        key="back_from_describe_wedding",
-        icon=":material/arrow_back:",
-        on_click=_navigate_to,
-        args=(WEDDING_START_PAGE,),
-    )
+    render_wedding_description()
 
 
 def _render_signup() -> None:
@@ -331,6 +322,10 @@ def render_home() -> None:
         _render_step_by_step_placeholder()
     elif page == DESCRIBE_WEDDING_PAGE:
         _render_describe_wedding_placeholder()
+    elif page == WEDDING_FOLLOWUPS_PAGE:
+        render_wedding_followups()
+    elif page == WEDDING_CEREMONIES_PAGE:
+        render_wedding_ceremonies()
     elif page == SIGNUP_PAGE:
         _render_signup()
     else:
