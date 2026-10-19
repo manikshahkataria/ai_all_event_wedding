@@ -1,10 +1,12 @@
 from unittest.mock import Mock, patch
 
 import pytest
+from httpx import ConnectError
 from streamlit.testing.v1 import AppTest
 from supabase_auth.errors import AuthApiError, AuthRetryableError
 
 from ai_event_planning_platform import home
+from ai_event_planning_platform.config import SupabaseConfigurationError
 from ai_event_planning_platform.auth import (
     ACCESS_TOKEN_KEY,
     REFRESH_TOKEN_KEY,
@@ -76,6 +78,84 @@ def test_login_connection_failure_has_safe_error() -> None:
         login_user(TEST_EMAIL, TEST_PASSWORD)
 
     assert "private network response" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("failure", "status"),
+    [
+        (ConnectError("private network response"), "none"),
+        (AuthRetryableError("private network response", 503), "503"),
+        (AuthRetryableError("private network response", 0), "none"),
+        (AuthApiError("private network response", 400, "invalid_credentials"), "400"),
+    ],
+)
+def test_login_diagnostics_are_sanitized(failure, status, caplog) -> None:
+    client = Mock()
+    client.auth.sign_in_with_password.side_effect = failure
+    with (
+        patch("ai_event_planning_platform.auth.create_supabase_client", return_value=client),
+        pytest.raises(LoginError),
+    ):
+        login_user(TEST_EMAIL, TEST_PASSWORD)
+
+    assert "stage=authentication_request" in caplog.text
+    assert f"http_status={status}" in caplog.text
+    assert f"category={type(failure).__name__}" in caplog.text
+    for private_value in ("private network response", TEST_EMAIL, TEST_PASSWORD):
+        assert private_value not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+def test_client_configuration_failure_is_classified_before_login(caplog) -> None:
+    with (
+        patch(
+            "ai_event_planning_platform.auth.create_supabase_client",
+            side_effect=SupabaseConfigurationError("private configuration value"),
+        ),
+        pytest.raises(LoginError, match="local Supabase configuration") as error,
+    ):
+        login_user(TEST_EMAIL, TEST_PASSWORD)
+
+    assert "stage=before_login_request http_status=none category=SupabaseConfigurationError" in caplog.text
+    assert "private configuration value" not in caplog.text + str(error.value)
+
+
+def test_restore_diagnostics_do_not_expose_session_tokens(caplog) -> None:
+    client = Mock()
+    client.auth.set_session.side_effect = AuthApiError(
+        "private session response", 401, "invalid_jwt"
+    )
+    with (
+        patch("ai_event_planning_platform.auth.create_supabase_client", return_value=client),
+        pytest.raises(SessionExpiredError),
+    ):
+        restore_authenticated_session(TEST_TOKENS.access_token, TEST_TOKENS.refresh_token)
+
+    assert "stage=session_restore http_status=401 category=AuthApiError" in caplog.text
+    for private_value in ("private session response", TEST_TOKENS.access_token, TEST_TOKENS.refresh_token):
+        assert private_value not in caplog.text
+
+
+def test_dashboard_load_failure_does_not_become_a_login_failure() -> None:
+    app = AppTest.from_file("../app.py").run()
+    with (
+        patch("ai_event_planning_platform.home.login_user", return_value=TEST_TOKENS),
+        patch("ai_event_planning_platform.home.restore_authenticated_session", return_value=TEST_TOKENS),
+        patch(
+            "ai_event_planning_platform.home.project_repository_from_state",
+            side_effect=RuntimeError("private dashboard response"),
+        ),
+    ):
+        app.text_input(key="login_email").set_value(TEST_EMAIL)
+        app.text_input(key="login_password").set_value(TEST_PASSWORD)
+        app.button(key="login_submit").click().run()
+
+    assert app.title[0].value == "My Wedding Projects"
+    assert app.session_state[ACCESS_TOKEN_KEY] == TEST_TOKENS.access_token
+    assert "projects could not be loaded" in app.error[0].value
+    assert "temporarily unavailable" not in app.error[0].value
+    assert "private dashboard response" not in app.error[0].value
+    assert not app.exception
 
 
 def test_unconfirmed_email_has_safe_error() -> None:
@@ -195,7 +275,7 @@ def test_auth_tokens_are_isolated_and_clearable_between_sessions() -> None:
     assert ACCESS_TOKEN_KEY in second_state
 
 
-def test_login_screen_authenticates_and_opens_protected_events() -> None:
+def test_login_screen_authenticates_and_opens_projects_dashboard() -> None:
     app = AppTest.from_file("../app.py").run()
     assert app.title[0].value == "Log in"
 
@@ -204,6 +284,10 @@ def test_login_screen_authenticates_and_opens_protected_events() -> None:
         patch(
             "ai_event_planning_platform.home.restore_authenticated_session",
             return_value=TEST_TOKENS,
+        ),
+        patch(
+            "ai_event_planning_platform.home.project_repository_from_state",
+            return_value=Mock(list_user_projects=Mock(return_value=[])),
         ),
     ):
         app.text_input(key="login_email").set_value(TEST_EMAIL)
@@ -214,7 +298,7 @@ def test_login_screen_authenticates_and_opens_protected_events() -> None:
     assert app.session_state[ACCESS_TOKEN_KEY] == TEST_TOKENS.access_token
     assert app.session_state[REFRESH_TOKEN_KEY] == TEST_TOKENS.refresh_token
     assert "login_password" not in app.session_state
-    assert app.title[0].value == "What Would You Like to Plan?"
+    assert app.title[0].value == "My Wedding Projects"
     assert not app.exception
 
 
@@ -256,6 +340,8 @@ def test_logout_clears_local_session_and_calls_supabase_signout() -> None:
     app = AppTest.from_file("../app.py")
     app.session_state["page"] = "events"
     store_auth_session(app.session_state, TEST_TOKENS)
+    app.session_state["active_wedding_project_id"] = "local-project-id"
+    app.session_state["wedding_profile_draft"] = "temporary draft"
     with (
         patch(
             "ai_event_planning_platform.home.restore_authenticated_session",
@@ -271,6 +357,8 @@ def test_logout_clears_local_session_and_calls_supabase_signout() -> None:
     logout.assert_called_once_with(TEST_TOKENS.access_token, TEST_TOKENS.refresh_token)
     assert ACCESS_TOKEN_KEY not in app.session_state
     assert REFRESH_TOKEN_KEY not in app.session_state
+    assert "active_wedding_project_id" not in app.session_state
+    assert "wedding_profile_draft" not in app.session_state
     assert app.session_state["page"] == "login"
     assert app.info[0].value == "Your app session has been cleared."
     assert not app.exception

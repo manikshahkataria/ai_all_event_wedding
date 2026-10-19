@@ -2,3 +2,4 @@ streamlit
 pytest
 supabase
 groq
+Pillow>=10.0,<13

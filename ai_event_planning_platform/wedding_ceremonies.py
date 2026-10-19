@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import streamlit as st
 
+from ai_event_planning_platform.ceremony_plan import CeremonyPlan
 from ai_event_planning_platform.wedding_form import DRAFT_STATE_KEY
 from ai_event_planning_platform.wedding_profile import (
     CulturalBackground,
@@ -18,6 +19,8 @@ CEREMONIES_STATE_KEY = "wedding_ceremonies_selected"
 CEREMONIES_CONFIRMED_KEY = "wedding_ceremonies_confirmed"
 CUSTOM_CEREMONIES_STATE_KEY = "wedding_custom_ceremonies"
 CEREMONY_CHECKBOX_PREFIX = "wedding_ceremony_selected_"
+CEREMONIES_SAVED_KEY = "wedding_ceremonies_saved_snapshot"
+CEREMONIES_DRAFT_IDS_KEY = "wedding_ceremonies_draft_ids"
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,7 @@ class Ceremony:
     cultural_association: str | None = None
     is_custom: bool = False
     selected: bool = False
+    plan: CeremonyPlan | None = None
 
 
 @dataclass(frozen=True)
@@ -284,18 +288,50 @@ def _selected_ids() -> set[str]:
 
 def _render_ceremony_option(ceremony: Ceremony, reason: str | None = None) -> None:
     key = f"{CEREMONY_CHECKBOX_PREFIX}{ceremony.ceremony_id}"
-    st.session_state.setdefault(
-        key,
-        ceremony.ceremony_id in _selected_ids()
-        if st.session_state.get(CEREMONIES_CONFIRMED_KEY, False)
-        else False,
+    draft_ids = st.session_state.setdefault(CEREMONIES_DRAFT_IDS_KEY, list(_selected_ids()))
+    st.session_state.setdefault(key, ceremony.ceremony_id in draft_ids)
+    st.checkbox(
+        ceremony.name, key=key, on_change=_record_ceremony_choice,
+        args=(ceremony.ceremony_id,),
     )
-    st.checkbox(ceremony.name, key=key)
     st.caption(ceremony.description)
     if ceremony.cultural_association:
         st.caption(ceremony.cultural_association)
     if reason:
         st.write(reason)
+
+
+def _record_ceremony_choice(ceremony_id: str) -> None:
+    draft_ids = set(st.session_state.get(CEREMONIES_DRAFT_IDS_KEY, ()))
+    if st.session_state.get(f"{CEREMONY_CHECKBOX_PREFIX}{ceremony_id}", False):
+        draft_ids.add(ceremony_id)
+    else:
+        draft_ids.discard(ceremony_id)
+    st.session_state[CEREMONIES_DRAFT_IDS_KEY] = list(draft_ids)
+
+
+def _draft_selection(ceremonies: list[Ceremony]) -> list[Ceremony]:
+    draft_ids = set(st.session_state.get(CEREMONIES_DRAFT_IDS_KEY, ()))
+    saved_by_id = {
+        item.ceremony_id: item
+        for item in st.session_state.get(CEREMONIES_SAVED_KEY, ())
+    }
+    selected = []
+    for item in ceremonies:
+        if item.ceremony_id not in draft_ids:
+            continue
+        saved = saved_by_id.get(item.ceremony_id)
+        plan = item.plan or (saved.plan if saved else None)
+        if plan is not None:
+            plan = replace(plan, ceremony_name=item.name)
+        selected.append(replace(item, selected=True, plan=plan))
+    return selected
+
+
+def _same_selection(first: list[Ceremony], second: list[Ceremony]) -> bool:
+    return {item.ceremony_id: item for item in first} == {
+        item.ceremony_id: item for item in second
+    }
 
 
 def _save_custom_name(ceremony_id: str, name: str) -> None:
@@ -314,6 +350,10 @@ def _save_custom_name(ceremony_id: str, name: str) -> None:
 
 
 def _delete_custom_ceremony(ceremony_id: str) -> None:
+    st.session_state[CEREMONIES_DRAFT_IDS_KEY] = [
+        item for item in st.session_state.get(CEREMONIES_DRAFT_IDS_KEY, ())
+        if item != ceremony_id
+    ]
     st.session_state[CUSTOM_CEREMONIES_STATE_KEY] = [
         item for item in _custom_ceremonies() if item.ceremony_id != ceremony_id
     ]
@@ -374,6 +414,14 @@ def _confirmed_selection() -> list[Ceremony]:
     return [item for item in values if isinstance(item, Ceremony) and item.selected]
 
 
+def _navigate_to_page(page: str) -> None:
+    from ai_event_planning_platform.wedding_project_state import (
+        navigate_project_to_page,
+    )
+
+    navigate_project_to_page(st.session_state, page)
+
+
 def _render_confirmed_summary() -> None:
     st.subheader("Your confirmed ceremonies")
     selection = _confirmed_selection()
@@ -384,12 +432,32 @@ def _render_confirmed_summary() -> None:
         st.markdown(f"- **{ceremony.name}**: {ceremony.description}")
 
 
+def render_saved_ceremony_summary() -> None:
+    """Render the verified saved snapshot, independently of ceremony edits."""
+    from ai_event_planning_platform.wedding_project_state import (
+        saved_project_ceremonies,
+    )
+
+    st.subheader("Your Confirmed Wedding Ceremonies")
+    try:
+        saved = saved_project_ceremonies(st.session_state)
+    except ValueError:
+        st.error(
+            "Your saved ceremonies could not be loaded. Reopen this wedding "
+            "project and try again."
+        )
+        return
+    if not saved:
+        st.write("No ceremonies selected yet.")
+        return
+    for ceremony in saved:
+        with st.container(border=True):
+            st.markdown(f"**{ceremony.name}**")
+            st.caption(ceremony.description)
+
+
 def _confirm_ceremonies(ceremonies: tuple[Ceremony, ...]) -> None:
-    selected = [
-        replace(ceremony, selected=True)
-        for ceremony in ceremonies
-        if st.session_state.get(f"{CEREMONY_CHECKBOX_PREFIX}{ceremony.ceremony_id}", False)
-    ]
+    selected = _draft_selection(list(ceremonies))
     st.session_state[CEREMONIES_STATE_KEY] = selected
     st.session_state[CUSTOM_CEREMONIES_STATE_KEY] = [
         replace(
@@ -402,6 +470,13 @@ def _confirm_ceremonies(ceremonies: tuple[Ceremony, ...]) -> None:
 
 
 def render_wedding_ceremonies() -> None:
+    from ai_event_planning_platform.wedding_project_state import (
+        ACTIVE_PROJECT_ID_KEY,
+        PENDING_PLAN_SAVES_KEY,
+        PROJECT_DIRTY_KEY,
+        persist_active_project,
+    )
+
     st.title("Choose Your Wedding Ceremonies")
     st.write(
         "Review optional ideas, choose only what feels right, and add ceremonies "
@@ -417,8 +492,7 @@ def render_wedding_ceremonies() -> None:
         st.info(clarification)
     if st.session_state[CEREMONIES_CONFIRMED_KEY]:
         st.caption(
-            "Your last confirmed choices are saved for this session. Changes below "
-            "remain drafts until you confirm again."
+            "Changes below remain drafts until you select Confirm My Ceremonies again."
         )
 
     st.subheader("Personalized suggestions")
@@ -448,18 +522,61 @@ def render_wedding_ceremonies() -> None:
     for ceremony in _custom_ceremonies():
         _render_ceremony_option(ceremony)
 
-    if st.button("Confirm My Ceremonies", key="confirm_wedding_ceremonies", type="primary"):
+    pending_plans = bool(st.session_state.get(PENDING_PLAN_SAVES_KEY))
+    if pending_plans:
+        st.warning("Retry failed ceremony plan saves before changing confirmed ceremony selections.")
+    planned_ids = {
+        item.ceremony_id for item in st.session_state.get(CEREMONIES_SAVED_KEY, ())
+        if item.plan is not None
+    }
+    if planned_ids - set(st.session_state.get(CEREMONIES_DRAFT_IDS_KEY, ())):
+        st.warning(
+            "Confirming this selection will also remove the saved plans for ceremonies "
+            "you deselected. Re-select those ceremonies to keep their plans."
+        )
+    if st.button(
+        "Confirm My Ceremonies", key="confirm_wedding_ceremonies", type="primary",
+        disabled=pending_plans,
+    ):
         _confirm_ceremonies(tuple(all_ceremonies))
+        if isinstance(st.session_state.get(ACTIVE_PROJECT_ID_KEY), str):
+            try:
+                persist_active_project(
+                    st.session_state,
+                    selected_ceremonies=_confirmed_selection(),
+                    planning_step="wedding_ceremonies",
+                )
+            except Exception:
+                st.session_state[PROJECT_DIRTY_KEY] = True
+                st.error(
+                    "Your ceremony selections could not be saved to the database. "
+                    "Your choices are still available in this session; retry Confirm."
+                )
+        else:
+            st.session_state[CEREMONIES_SAVED_KEY] = list(_confirmed_selection())
 
-    if st.session_state[CEREMONIES_CONFIRMED_KEY]:
-        st.success("Your ceremony selections are confirmed for this session.")
+    saved = st.session_state.get(CEREMONIES_SAVED_KEY)
+    draft_changed = not _same_selection(
+        _draft_selection(all_ceremonies), saved or []
+    )
+    if draft_changed:
+        st.warning("You have unsaved ceremony changes. Select Confirm My Ceremonies to save them.")
+    if st.session_state[CEREMONIES_CONFIRMED_KEY] and not draft_changed:
+        if isinstance(st.session_state.get(ACTIVE_PROJECT_ID_KEY), str):
+            if saved is None or st.session_state.get(PROJECT_DIRTY_KEY, False):
+                st.warning("These ceremony choices have not yet been saved.")
+            else:
+                st.success("Your ceremony selections are saved to this wedding project.")
+        else:
+            st.success("Your ceremony selections are confirmed for this session.")
         st.info("Next: Plan each ceremony's guests, dates, venue and budget.")
     _render_confirmed_summary()
 
     st.button(
-        "Back to wedding details",
-        key="back_from_wedding_ceremonies",
-        on_click=lambda: st.session_state.__setitem__("page", "wedding_followups"),
+        "Plan Your Wedding Ceremonies", key="open_ceremony_planning",
+        on_click=_navigate_to_page, args=("ceremony_planning",),
+        disabled=not st.session_state.get(ACTIVE_PROJECT_ID_KEY)
+        or not st.session_state.get(CEREMONIES_SAVED_KEY),
     )
 
 
@@ -467,5 +584,6 @@ def render_ceremony_entry_button(key: str) -> None:
     st.button(
         "Choose Your Wedding Ceremonies",
         key=key,
-        on_click=lambda: st.session_state.__setitem__("page", WEDDING_CEREMONIES_PAGE),
+        on_click=_navigate_to_page,
+        args=(WEDDING_CEREMONIES_PAGE,),
     )

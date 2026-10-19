@@ -1,3 +1,4 @@
+import logging
 import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass
@@ -12,6 +13,18 @@ EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 DUPLICATE_ACCOUNT_CODES = {"email_exists", "user_already_exists"}
 ACCESS_TOKEN_KEY = "auth_access_token"
 REFRESH_TOKEN_KEY = "auth_refresh_token"
+logger = logging.getLogger(__name__)
+
+
+def _log_auth_failure(stage: str, error: Exception) -> None:
+    """Log diagnostic metadata without response bodies, URLs, or credentials."""
+    status = getattr(error, "status", None)
+    if type(status) is not int or not 100 <= status <= 599:
+        status = "none"
+    logger.warning(
+        "Supabase auth failure stage=%s http_status=%s category=%s",
+        stage, status, type(error).__name__,
+    )
 
 
 @dataclass(frozen=True)
@@ -80,12 +93,20 @@ def login_user(email: str, password: str) -> AuthSessionTokens:
     if not password:
         raise LoginError("Enter your password.")
 
+    stage = "before_login_request"
     try:
         client = create_supabase_client()
+        stage = "authentication_request"
         response = client.auth.sign_in_with_password(
             {"email": email.strip(), "password": password}
         )
+    except SupabaseConfigurationError as error:
+        _log_auth_failure(stage, error)
+        raise LoginError(
+            "Login is unavailable. Check the local Supabase configuration."
+        ) from None
     except AuthApiError as error:
+        _log_auth_failure(stage, error)
         if error.code == "email_not_confirmed":
             raise LoginError("Confirm your email before logging in.") from None
         if error.code == "over_request_rate_limit":
@@ -93,11 +114,13 @@ def login_user(email: str, password: str) -> AuthSessionTokens:
         if error.code in {"invalid_credentials", "user_not_found"}:
             raise LoginError("Email or password is incorrect.") from None
         raise LoginError("Unable to log in right now. Please try again.") from None
-    except AuthRetryableError:
+    except AuthRetryableError as error:
+        _log_auth_failure(stage, error)
         raise LoginError(
             "The authentication service is temporarily unavailable. Please try again."
         ) from None
-    except Exception:
+    except Exception as error:
+        _log_auth_failure(stage, error)
         raise LoginError(
             "The authentication service is temporarily unavailable. Please try again."
         ) from None
@@ -122,11 +145,13 @@ def restore_authenticated_session(
     try:
         client = create_supabase_client()
         response = client.auth.set_session(access_token, refresh_token)
-    except AuthRetryableError:
+    except AuthRetryableError as error:
+        _log_auth_failure("session_restore", error)
         raise SessionVerificationError(
             "Your session could not be verified. Please log in again."
         ) from None
     except AuthApiError as error:
+        _log_auth_failure("session_restore", error)
         if error.status in {400, 401}:
             raise SessionExpiredError(
                 "Your session has expired. Please log in again."
@@ -134,11 +159,13 @@ def restore_authenticated_session(
         raise SessionVerificationError(
             "Your session could not be verified. Please log in again."
         ) from None
-    except AuthError:
+    except AuthError as error:
+        _log_auth_failure("session_restore", error)
         raise SessionExpiredError(
             "Your session has expired. Please log in again."
         ) from None
-    except Exception:
+    except Exception as error:
+        _log_auth_failure("session_restore", error)
         raise SessionVerificationError(
             "Your session could not be verified. Please log in again."
         ) from None

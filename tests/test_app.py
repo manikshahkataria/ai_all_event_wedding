@@ -47,11 +47,11 @@ def test_other_event_categories_are_disabled(authenticated_app: AppTest) -> None
 @pytest.mark.parametrize(
     ("option_key", "expected_page", "back_key"),
     [
-        ("choose_step_by_step", "Plan Step by Step", "back_from_step_by_step"),
+        ("choose_step_by_step", "Plan Step by Step", "planning_back"),
         (
             "choose_describe_wedding",
             "Describe Your Dream Wedding",
-            "back_from_describe_wedding",
+            "planning_back",
         ),
     ],
 )
@@ -73,7 +73,7 @@ def test_wedding_onboarding_options_open_placeholders(
 
     assert not app.exception
     assert app.title[0].value == expected_page
-    assert app.button(key=back_key).label == "Back to planning options"
+    assert app.button(key=back_key).label == "Back"
     app.button(key=back_key).click().run()
 
     assert app.title[0].value == "How Would You Like to Start Planning?"
@@ -86,10 +86,10 @@ def test_back_navigation_returns_to_previous_screens(
     app = authenticated_app
     app.button(key="select_wedding").click().run()
     app.button(key="choose_step_by_step").click().run()
-    app.button(key="back_from_step_by_step").click().run()
+    app.button(key="planning_back").click().run()
 
     assert app.title[0].value == "How Would You Like to Start Planning?"
-    app.button(key="back_to_events").click().run()
+    app.button(key="planning_back").click().run()
 
     assert app.title[0].value == "What Would You Like to Plan?"
     assert not app.exception

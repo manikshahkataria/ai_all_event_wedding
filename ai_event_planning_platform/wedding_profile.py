@@ -50,6 +50,8 @@ class WeddingProfile:
     partner_2_culture: CulturalBackground | None = None
     traditions: tuple[TraditionPreference, ...] = ()
     additional_preferences: str | None = None
+    bride_name: str | None = None
+    groom_name: str | None = None
 
 
 def _legacy_value(value: object) -> object:
@@ -159,6 +161,8 @@ def migrate_wedding_profile(value: object) -> WeddingProfile | None:
         partner_2_culture=_legacy_culture(partner_2_culture),
         traditions=legacy_traditions,
         additional_preferences=_clean_text(additional_preferences),
+        bride_name=_clean_text(getattr(value, "bride_name", None)),
+        groom_name=_clean_text(getattr(value, "groom_name", None)),
     )
 
 
@@ -184,6 +188,9 @@ def validate_wedding_profile(
 
     errors: list[str] = []
     current_date = today or date.today()
+    for label, value in (("Bride's name", profile.bride_name), ("Groom's name", profile.groom_name)):
+        if value is not None and (not isinstance(value, str) or len(value) > 120):
+            errors.append(f"{label} must be text of at most 120 characters.")
     if not isinstance(profile.wedding_date_status, WeddingDateStatus):
         errors.append("Choose a valid wedding date status.")
     elif profile.wedding_date_status is WeddingDateStatus.NOT_DECIDED_YET:

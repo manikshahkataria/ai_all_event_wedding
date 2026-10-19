@@ -321,8 +321,10 @@ def _provided_detail_count(profile: WeddingProfile) -> int:
 
 
 def _go_to_return_page() -> None:
-    st.session_state["page"] = st.session_state.get(
-        FOLLOWUP_RETURN_PAGE_KEY, "step_by_step"
+    from ai_event_planning_platform.wedding_project_state import navigate_project_to_page
+
+    navigate_project_to_page(
+        st.session_state, st.session_state.get(FOLLOWUP_RETURN_PAGE_KEY, "step_by_step")
     )
 
 
@@ -335,8 +337,10 @@ def render_followup_entry_button(return_page: str, *, key: str) -> None:
 
 
 def _open_followups(return_page: str) -> None:
+    from ai_event_planning_platform.wedding_project_state import navigate_project_to_page
+
     st.session_state[FOLLOWUP_RETURN_PAGE_KEY] = return_page
-    st.session_state["page"] = "wedding_followups"
+    navigate_project_to_page(st.session_state, "wedding_followups")
 
 
 def _render_answered_editor() -> None:
@@ -357,6 +361,13 @@ def _render_answered_editor() -> None:
 
 
 def render_wedding_followups() -> None:
+    from ai_event_planning_platform.wedding_project_state import (
+        ACTIVE_PROJECT_ID_KEY,
+        PROJECT_DIRTY_KEY,
+        PROJECT_SUCCESS_KEY,
+        persist_active_project,
+    )
+
     st.title("Complete Wedding Details")
     profile = migrate_wedding_profile(st.session_state.get(DRAFT_STATE_KEY))
     if profile is None or not st.session_state.get(DRAFT_SAVED_STATE_KEY, False):
@@ -430,12 +441,40 @@ def render_wedding_followups() -> None:
                 else:
                     st.session_state[DRAFT_STATE_KEY] = updated
                     st.session_state[DRAFT_SAVED_STATE_KEY] = True
-                    answered.add(question_id)
-                    skipped.discard(question_id)
-                    st.session_state[FOLLOWUP_ANSWERED_KEY] = list(answered)
-                    st.session_state[FOLLOWUP_SKIPPED_KEY] = list(skipped)
-                    st.session_state[FOLLOWUP_EDIT_KEY] = None
-                    st.rerun()
+                    if isinstance(
+                        st.session_state.get(ACTIVE_PROJECT_ID_KEY), str
+                    ):
+                        try:
+                            persist_active_project(
+                                st.session_state,
+                                profile=updated,
+                                planning_step="wedding_followups",
+                            )
+                        except Exception:
+                            st.session_state[PROJECT_DIRTY_KEY] = True
+                            st.session_state[FOLLOWUP_EDIT_KEY] = question_id
+                            st.error(
+                                "Your answer could not be saved to the database. "
+                                "Your edits are still available in this session; "
+                                "retry Save answer."
+                            )
+                        else:
+                            st.session_state[PROJECT_SUCCESS_KEY] = (
+                                "Your answer was saved to this wedding project."
+                            )
+                            answered.add(question_id)
+                            skipped.discard(question_id)
+                            st.session_state[FOLLOWUP_ANSWERED_KEY] = list(answered)
+                            st.session_state[FOLLOWUP_SKIPPED_KEY] = list(skipped)
+                            st.session_state[FOLLOWUP_EDIT_KEY] = None
+                            st.rerun()
+                    else:
+                        answered.add(question_id)
+                        skipped.discard(question_id)
+                        st.session_state[FOLLOWUP_ANSWERED_KEY] = list(answered)
+                        st.session_state[FOLLOWUP_SKIPPED_KEY] = list(skipped)
+                        st.session_state[FOLLOWUP_EDIT_KEY] = None
+                        st.rerun()
 
     skip_label = "Cancel editing" if edit_id in QUESTION_BY_ID else "Skip for now"
     if st.button(skip_label, key="wedding_followup_skip"):

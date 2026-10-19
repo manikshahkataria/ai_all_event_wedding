@@ -84,6 +84,8 @@ def _initialize_form_state(profile: WeddingProfile, key_prefix: str) -> None:
     date_value = _date_input_value(profile.wedding_date)
     st.session_state.setdefault(state_key("date_value"), date_value)
     st.session_state.setdefault(state_key("city_value"), profile.city or "")
+    st.session_state.setdefault(state_key("bride_name_value"), profile.bride_name or "")
+    st.session_state.setdefault(state_key("groom_name_value"), profile.groom_name or "")
     st.session_state.setdefault(state_key("state_value"), profile.state or "")
     st.session_state.setdefault(
         state_key("location_preference"),
@@ -191,12 +193,28 @@ def _render_summary(profile: WeddingProfile) -> None:
 
 
 def _back_to_planning_options() -> None:
-    st.session_state["page"] = "wedding_start"
+    from ai_event_planning_platform.wedding_project_state import (
+        navigate_project_to_page,
+    )
+
+    navigate_project_to_page(st.session_state, "wedding_start")
 
 
 def _open_wedding_followups() -> None:
+    from ai_event_planning_platform.wedding_project_state import (
+        navigate_project_to_page,
+    )
+
     st.session_state["wedding_followup_return_page"] = "step_by_step"
-    st.session_state["page"] = "wedding_followups"
+    navigate_project_to_page(st.session_state, "wedding_followups")
+
+
+def _open_wedding_ceremonies() -> None:
+    from ai_event_planning_platform.wedding_project_state import (
+        navigate_project_to_page,
+    )
+
+    navigate_project_to_page(st.session_state, "wedding_ceremonies")
 
 
 def render_wedding_requirements(
@@ -209,6 +227,15 @@ def render_wedding_requirements(
     show_temporary_notice: bool = True,
     show_back_button: bool = True,
 ) -> None:
+    from ai_event_planning_platform.wedding_project_state import (
+        ACTIVE_PROJECT_ID_KEY,
+        PROJECT_DIRTY_KEY,
+        persist_active_project,
+    )
+
+    active_project_id = st.session_state.get(ACTIVE_PROJECT_ID_KEY)
+    if isinstance(active_project_id, str):
+        widget_prefix = f"{widget_prefix}{active_project_id}_"
     widget_key = lambda name: f"{widget_prefix}{name}"
     submit_widget_key = (
         "save_wedding_profile"
@@ -222,7 +249,7 @@ def render_wedding_requirements(
     )
     st.title(title)
     st.write("Share what you know. All details except date status are optional.")
-    if show_temporary_notice:
+    if show_temporary_notice and not isinstance(active_project_id, str):
         st.info(
             "This draft is stored temporarily in this Streamlit session only. "
             "It is not saved to an account or database and will be lost when the session ends."
@@ -243,6 +270,8 @@ def render_wedding_requirements(
     date_status = DATE_STATUS_LABELS[date_status_label]
 
     with st.form("wedding_requirements_form", clear_on_submit=False):
+        bride_name = st.text_input("Bride's name (optional)", key=widget_key("bride_name_value"), max_chars=120)
+        groom_name = st.text_input("Groom's name (optional)", key=widget_key("groom_name_value"), max_chars=120)
         wedding_date = None
         if date_status is not WeddingDateStatus.NOT_DECIDED_YET:
             date_label = (
@@ -379,6 +408,8 @@ def render_wedding_requirements(
             ),
             traditions=tuple(TRADITION_VALUES[label] for label in traditions),
             additional_preferences=additional_preferences.strip() or None,
+            bride_name=bride_name.strip() or None,
+            groom_name=groom_name.strip() or None,
         )
         errors = validate_wedding_profile(candidate)
         if errors:
@@ -388,24 +419,69 @@ def render_wedding_requirements(
             st.session_state[profile_state_key] = candidate
             st.session_state[saved_state_key] = True
             profile = candidate
-            st.success("Your requirements draft was saved for this session.")
+            if isinstance(active_project_id, str) and profile_state_key == DRAFT_STATE_KEY:
+                try:
+                    persist_active_project(
+                        st.session_state,
+                        profile=candidate,
+                        planning_step="step_by_step",
+                    )
+                except Exception:
+                    st.session_state[PROJECT_DIRTY_KEY] = True
+                    st.error(
+                        "Your requirements could not be saved to the database. "
+                        "Your edits are still available in this session; retry Save."
+                    )
+                else:
+                    st.success("Your requirements were saved to this wedding project.")
+            elif profile_state_key != DRAFT_STATE_KEY:
+                st.success("Your review changes are ready. Accept them to update your wedding project.")
+            else:
+                st.success("Your requirements draft was saved for this session.")
 
     if st.session_state.get(saved_state_key, False):
         saved_profile = migrate_wedding_profile(st.session_state.get(profile_state_key))
         if saved_profile is not None:
             _render_summary(saved_profile)
             if profile_state_key == DRAFT_STATE_KEY:
+                from ai_event_planning_platform.wedding_ceremonies import (
+                    render_saved_ceremony_summary,
+                )
+
+                render_saved_ceremony_summary()
+                st.button(
+                    "Edit Ceremonies",
+                    key="choose_ceremonies_from_profile",
+                    on_click=_open_wedding_ceremonies,
+                )
+                from ai_event_planning_platform.ceremony_planning import (
+                    render_ceremony_plan_overview,
+                )
+
+                render_ceremony_plan_overview()
+                from ai_event_planning_platform.wedding_project_state import navigate_project_to_page
+
+                st.button(
+                    "Smart Wedding Budget", key="wedding_budget_open",
+                    on_click=navigate_project_to_page, args=(st.session_state, "smart_wedding_budget"),
+                )
+                st.button(
+                    "Wedding Calendar & Timeline", key="wedding_timeline_open",
+                    on_click=navigate_project_to_page, args=(st.session_state, "wedding_timeline"),
+                )
+                from ai_event_planning_platform.timeline_planning import render_timeline_summary
+                from ai_event_planning_platform.wedding_project_state import PROFILE_SAVED_KEY, saved_project_ceremonies
+                if st.session_state.get(PROFILE_SAVED_KEY):
+                    try:
+                        saved_ceremonies = saved_project_ceremonies(st.session_state)
+                    except ValueError:
+                        st.caption("Scheduling summary unavailable. Reopen the project to restore saved ceremony details.")
+                    else:
+                        render_timeline_summary(st.session_state, st.session_state[PROFILE_SAVED_KEY], saved_ceremonies)
                 st.button(
                     "Complete Wedding Details",
                     key="open_wedding_followups_from_form",
                     on_click=_open_wedding_followups,
-                )
-                st.button(
-                    "Choose Your Wedding Ceremonies",
-                    key="choose_ceremonies_from_profile",
-                    on_click=lambda: st.session_state.__setitem__(
-                        "page", "wedding_ceremonies"
-                    ),
                 )
 
     if show_back_button:

@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import streamlit as st
 
 from ai_event_planning_platform.wedding_extraction import (
@@ -84,18 +86,42 @@ def _render_accept_extracted_profile(profile: WeddingProfile) -> None:
         disabled=has_existing_draft and not replace_existing,
     )
     if accepted:
+        from ai_event_planning_platform.wedding_project_state import (
+            ACTIVE_PROJECT_ID_KEY,
+            PROJECT_DIRTY_KEY,
+            persist_active_project,
+        )
+
         current_profile = migrate_wedding_profile(
             st.session_state.get(EXTRACTION_PROFILE_STATE_KEY)
         )
         if current_profile is None:
             st.error("There is no extracted profile to accept. Run extraction again.")
             return
+        if isinstance(st.session_state.get(ACTIVE_PROJECT_ID_KEY), str):
+            try:
+                persist_active_project(
+                    st.session_state,
+                    profile=current_profile,
+                    planning_step="describe_wedding",
+                )
+            except Exception:
+                st.session_state[PROJECT_DIRTY_KEY] = True
+                st.error(
+                    "The reviewed details could not be saved to the database. "
+                    "Your extracted edits remain available in this session; retry "
+                    "accepting them."
+                )
+                return
         st.session_state[DRAFT_STATE_KEY] = current_profile
         st.session_state[DRAFT_SAVED_STATE_KEY] = True
         st.session_state[EXTRACTION_ACCEPTED_STATE_KEY] = True
-        st.success(
-            "The reviewed details are now your active wedding requirements draft."
-        )
+        if isinstance(st.session_state.get(ACTIVE_PROJECT_ID_KEY), str):
+            st.success("The reviewed details were saved to this wedding project.")
+        else:
+            st.success(
+                "The reviewed details are now your active wedding requirements draft."
+            )
         render_followup_entry_button(
             "describe_wedding", key="complete_wedding_details_after_extraction"
         )
@@ -157,6 +183,9 @@ def render_wedding_description() -> None:
             except WeddingExtractionError as error:
                 st.error(str(error))
             else:
+                active = migrate_wedding_profile(st.session_state.get(DRAFT_STATE_KEY))
+                if active:
+                    candidate = replace(candidate, bride_name=active.bride_name, groom_name=active.groom_name)
                 st.session_state[EXTRACTION_PROFILE_STATE_KEY] = candidate
                 st.session_state[EXTRACTION_SAVED_STATE_KEY] = True
                 st.success("Details extracted. Review and edit them before accepting.")
@@ -182,10 +211,3 @@ def render_wedding_description() -> None:
         )
         if reviewed_candidate is not None:
             _render_accept_extracted_profile(reviewed_candidate)
-
-    st.button(
-        "Back to planning options",
-        key="back_from_describe_wedding",
-        icon=":material/arrow_back:",
-        on_click=lambda: st.session_state.__setitem__("page", "wedding_start"),
-    )

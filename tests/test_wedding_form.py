@@ -117,7 +117,7 @@ def test_draft_survives_navigation_away_and_back(wedding_form_app: AppTest) -> N
     app.text_input(key="wedding_city_value").set_value("Bareilly")
     app.button(key="save_wedding_profile").click().run()
     saved_profile = app.session_state[DRAFT_STATE_KEY]
-    app.button(key="back_from_step_by_step").click().run()
+    app.button(key="planning_back").click().run()
 
     assert app.title[0].value == "How Would You Like to Start Planning?"
     app.button(key="choose_step_by_step").click().run()
